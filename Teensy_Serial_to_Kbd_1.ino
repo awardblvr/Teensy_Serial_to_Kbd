@@ -3,6 +3,7 @@
 #include <SerialCommands.h>
 #include <Arduino.h>
 
+char banner_str[] = "CMD_SERIAL Andrew's Fast Serial Command to USB Keyboard Actor v1.4";
 /*
 handle:
  keys:
@@ -37,8 +38,25 @@ char const delim[] = " ";
 SerialCommands serial_commands_(&CMD_SERIAL, serial_command_buffer_, sizeof(serial_command_buffer_), terminator, delim, true);
 
 unsigned long next_finish_millis = 0;
+unsigned long next_status_blink_millis = 0;
+
 uint8_t  keys_pressed=0;
 bool k_mode = true;    // true = Continual press
+char *KmodeStrings[] = {"Press/Release",
+                        "Continual Press"};
+bool reboot_mode=true;  // true = reboot after commands longer than 1 Sec
+char *RmodeStrings[] = {"No", "Yes"};
+
+void Restart(void)
+{
+    #define RESTART_ADDR       0xE000ED0C
+    #define READ_RESTART()     (*(volatile uint32_t *)RESTART_ADDR)
+    #define WRITE_RESTART(val) ((*(volatile uint32_t *)RESTART_ADDR) = (val))
+
+    // 0000101111110100000000000000100
+    // Assert [2]SYSRESETREQ
+    WRITE_RESTART(0x5FA0004);
+}
 
 void USB_KBD_Serial_Startup(void) 
 {
@@ -58,6 +76,17 @@ void assign_next_completion_time(int secs) {
     }
 
     next_finish_millis = millis() + (1000 * secs);
+}
+
+void status_blink(void) {
+  if (! next_finish_millis) { 
+    for (int x=3; x--; ){
+      digitalWrite(ledPin, HIGH); 
+      delay(100);
+      digitalWrite(ledPin, LOW); 
+      delay(100);
+    }
+  } 
 }
 
 void cmd_unrecognized(SerialCommands* sender, const char* cmd)
@@ -82,14 +111,19 @@ void cmd_unrecognized(SerialCommands* sender, const char* cmd)
   serial_commands_.ClearBuffer();
 }
 
+
 void do_usb_kbd_clear(void)
 {
   //Note: Every call to Next moves the pointer to next parameter
   CMD_SERIAL.println("in do_usb_kbd_clear:");
 
   Keyboard.releaseAll();
-  digitalWrite(ledPin, LOW); 
-  
+  digitalWrite(ledPin, LOW);
+  Keyboard.end();
+
+  if (reboot_mode) {
+    Restart(); 
+  }
   next_finish_millis = 0;
   return;
 }
@@ -114,13 +148,28 @@ void do_mode_continual_press(SerialCommands* sender)
 {
     k_mode = true;
     CMD_SERIAL.print("mode: supposed CONTINUAL Key Press\n> ");
+    do_printHelp();
 }
 
 void do_mode_press_release(SerialCommands* sender)
 {
     k_mode = false;
     CMD_SERIAL.print("mode: continual Press/Release\n> ");
+    do_printHelp();
 }
+
+void do_toggle_k_mode(SerialCommands* sender)
+{
+    k_mode = !k_mode;
+    do_printHelp();
+}
+
+void do_toggle_reboot_after_cmd(SerialCommands* sender)
+{
+    reboot_mode = !reboot_mode;
+    do_printHelp();
+}
+
 
 SerialCommand do_questMk_("?", do_printHelp);
 SerialCommand do_h_("h", do_printHelp);
@@ -137,6 +186,9 @@ SerialCommand do_usb_kbd_cmdv_("cmdv", do_usb_kbd_cmdv);
 SerialCommand do_usb_kbd_t_("t", do_usb_kbd_t);
 SerialCommand do_mode_continual_press_("kp", do_mode_continual_press);
 SerialCommand do_mode_press_release_("kr", do_mode_press_release);
+SerialCommand do_toggle_k_mode_ ("tkm", do_toggle_k_mode);
+SerialCommand do_toggle_reboot_after_cmd_ ("trb", do_toggle_reboot_after_cmd);
+
 
 void do_usb_kbd_opt(SerialCommands* sender)
 {
@@ -317,7 +369,7 @@ void setup() {
     digitalWrite(ledPin, LOW); 
     delay(300);
   }
-  CMD_SERIAL.println("CMD_SERIAL Andrew's Fast Serial Command to USB Keyboard Actor v1.1");
+
 //  USB_KBD.println("USB_KBD Andrew's Fast Serial Command to USB Keyboard Actor v1.1");
   
   serial_commands_.SetDefaultHandler(cmd_unrecognized);
@@ -335,14 +387,21 @@ void setup() {
   serial_commands_.AddCommand(&do_usb_kbd_t_);
   serial_commands_.AddCommand(&do_mode_continual_press_);
   serial_commands_.AddCommand(&do_mode_press_release_);
+  serial_commands_.AddCommand(&do_toggle_k_mode_);
+  serial_commands_.AddCommand(&do_toggle_reboot_after_cmd_);
 
-  CMD_SERIAL.print("> ");
+  do_printHelp();
 }
 
 unsigned long  throttle=0;
 unsigned long  throttle_cnt=0;
 
 void loop() {
+  if (next_status_blink_millis == 0 || next_status_blink_millis < millis() ) {
+    next_status_blink_millis = millis() + 20000;
+    status_blink();
+  }
+   
   if (next_finish_millis && next_finish_millis < millis()) {
     next_finish_millis = 0;
     do_usb_kbd_clear();
@@ -364,6 +423,8 @@ void loop() {
 
 void do_printHelp(void)
 {
+  CMD_SERIAL.println(banner_str);
+
   CMD_SERIAL.println("key(s) held pressed during reboot:"); 
   CMD_SERIAL.println("  <seq> [secs]    where <seq> is one of:");
   CMD_SERIAL.println("  cmd, opt, shift, (plus another or a letter)");
@@ -381,5 +442,10 @@ void do_printHelp(void)
   CMD_SERIAL.println("   t        (Target disk mode) ONLY FROM POWER-UP\n");
   CMD_SERIAL.println("   kp       supposed CONTINUAL Key Press");
   CMD_SERIAL.println("   kr       continual Press/Release\n");
+  CMD_SERIAL.print  ("   tkm      toggle Key Mode currently ");
+  CMD_SERIAL.println(KmodeStrings[(int)k_mode]);
+  CMD_SERIAL.print  ("   trb      toggle ReBoot after cmd > 1 sec (currently ");
+  CMD_SERIAL.print  (RmodeStrings[(int)reboot_mode]);
+  CMD_SERIAL.println(")\n");
   CMD_SERIAL.print("> ");
 }
